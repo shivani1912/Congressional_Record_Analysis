@@ -1,0 +1,264 @@
+---
+title: "Text Analysis on Congressional Records"
+author: "Shivani Sharma"
+date: "2/9/2020"
+output:
+  html_document: default
+  word_document: default
+---
+This data originally appeared in Gentzkow and Shapiro (GS; 2010) and considers text of the 2005 Congressional Record, containing all speeches in that year for members of the United States House and Senate. In particular, GS record the number times each of 529 legislators used terms in a list of 1000 phrases (i.e., each document is a year of transcripts for a single speaker). It also includes the ideology of each speaker –
+Party: (Republican, Democrat, or Independent)
+repshare: share of constituents voting for Bush in 2004
+
+First Step: Fit K-means to the speech text of the members, comprising of the 1000 phrases, for K in 5,10,15,20,25
+```{r}
+library(textir)
+library(maptpx)
+load("congress.RData")
+options(repos = c(CRAN = "http://cran.rstudio.com"))
+fs <- scale(as.matrix( congress109Counts/rowSums(congress109Counts) ))
+
+
+kfit <- lapply(seq(5,25,5), function(k) kmeans(fs,k))
+```
+Second Step: Use BIC to choose the K and interpret the selected model. Also use the elbow curve method to identify the most optimal value of K. Compare the two values of K that you obtained.
+
+```{r}
+kic <- function(fit, rule=c("A","B")){
+	df <- length(fit$centers) # K*dim
+	n <- sum(fit$size)
+	D <- fit$tot.withinss # deviance
+	rule=match.arg(rule)
+	if(rule=="A")
+		return(D + 2*df*n/(n-df-1))
+	else
+		return(D + log(n)*df)
+}
+
+
+
+KAICc_score <- sapply(kfit, kic, "A")
+KAICc<-as.data.frame(KAICc_score)
+KAICc$k<-seq(5,25,5)
+
+View(KAICc)
+
+plot(x=KAICc$k,y=KAICc$KAICc_score, xlab="K", ylab="AICc")
+lines(KAICc$k,KAICc$KAICc_score, col=4, lwd=2)
+abline(v=which.min(KAICc$kAICc_score),col=4)
+
+
+deviance <- lapply(seq(5,25,5), function(k) kmeans(fs, k)$tot.withinss)
+plot(seq(5,25,5), deviance, xlab="K", ylab="Deviance")
+lines(seq(5,25,5), deviance, col=4)
+
+
+
+install.packages("factoextra")
+library(factoextra)
+fviz_nbclust(fs, kmeans, method = "wss",k.max=25)
+
+
+kfit <- lapply(seq(1,25,1), function(k) kmeans(fs,k))
+KAICc_score <- sapply(kfit, kic, "A")
+KAICc<-as.data.frame(KAICc_score)
+KAICc$k<-seq(1,25,1)
+
+
+plot(x=KAICc$k,y=KAICc$KAICc_score, xlab="K", ylab="AICc")
+lines(KAICc$k,KAICc$KAICc_score, col=4, lwd=2)
+abline(v=which.min(KAICc$kAICc_score),col=4)
+
+
+kfit <- lapply(seq(1,25,1), function(k) kmeans(fs,k))
+
+
+```
+
+
+Third Step:Fit a topic model for the speech counts. Use Bayes factors to choose the number of topics and interpret your chosen model.
+```{r}
+#topic model
+x <- as.simple_triplet_matrix(congress109Counts)
+
+#bayes factor
+tpcs <- topics(x, K=5*(1:5), verb=10)
+
+summary(tpcs, n=10) 
+
+install.packages("wordcloud")
+library(wordcloud)
+
+par(mfrow=c(1,2))
+for (i in 1:10)
+{
+wordcloud(row.names(tpcs$theta), 
+	freq=tpcs$theta[,i], min.freq=0.004, col="maroon")
+}
+
+
+```
+Fourth Step: Connect the unsupervised clusters to partisanship. Tabulate party membership by K-means cluster. Are there any non-partisan topics? Fit topic regressions for each of party and repshare. Compare to regression onto phrase percentages: x <- 100 * congress109Counts / rowSums(congress109Counts)
+```{r}
+library(glmnet)
+
+
+install.packages("dplyr")
+library(dplyr)
+
+#KMeans Cluster
+#percentage of party wise candidates in each cluster
+kfit <- lapply(seq(1,25,1), function(k) kmeans(fs,k))
+k=20
+party_cluster<-tapply(congress109Ideology$party, kfit[[k]]$cluster, table)
+
+df<-data.frame()
+x<-c("Democrats","Independent","Republicans")
+
+
+
+#percentage of party wise candidates in each cluster
+for( i in 1:20)
+{
+df[i,1]<- round(party_cluster[i][[1]][[1]]/(party_cluster[i][[1]][[1]]+party_cluster[i][[1]][[2]]+party_cluster[i][[1]][[3]]),3)
+df[i,2]<- round(party_cluster[i][[1]][[2]]/(party_cluster[i][[1]][[1]]+party_cluster[i][[1]][[2]]+party_cluster[i][[1]][[3]]),3)
+df[i,3]<-round(party_cluster[i][[1]][[3]]/(party_cluster[i][[1]][[1]]+party_cluster[i][[1]][[2]]+party_cluster[i][[1]][[3]]),3)
+
+}
+
+View(df)
+colnames(df)<-x
+View(df)
+
+#Topics
+#Partisanship of topics
+all_topics_candidates<-as.data.frame(tpcs$omega)
+colnames(all_topics_candidates)<-c("tp1","tp2","tp3","tp4","tp5","tp6","tp7","tp8","tp9","tp10")
+all_topics_candidates$candidates<-rownames(all_topics_candidates)
+congress109Ideology$candidates<-rownames(congress109Ideology)
+party_topic_data<-merge(all_topics_candidates,congress109Ideology,by="candidates")
+
+party_topic_sum<-party_topic_data%>% select(1,party,2,3,4,5,6,7,8,9,10,11) %>% group_by(party) %>% summarize(tp1_wt=sum(tp1),tp2_wt=sum(tp2),tp3_wt=sum(tp3),tp4_wt=sum(tp4),tp5_wt=sum(tp5),tp6_wt=sum(tp6),tp7_wt=sum(tp7),tp8_wt=sum(tp8),tp9_wt=sum(tp9),tp10_wt=sum(tp10))
+party_topic_sum
+d<-party_topic_sum %>% filter(party!="I")
+d[,-1] = apply(d[,-1],2,function(x){round(x/sum(x),3)})
+View(d)
+
+
+
+```
+
+
+```{r}
+#regression
+#party &repshare for republican on topics
+rep_all <- party_topic_data %>% select(party,tp1,tp2,tp2,tp4,tp5,tp5,tp7,tp8,tp9,tp10,repshare)%>% filter(party=="R")
+rep_omega<-as.matrix(rep_all%>% select(tp1,tp2,tp2,tp4,tp5,tp5,tp7,tp8,tp9,tp10))
+rep_repshare<-rep_all$repshare
+rep_regtopics.cv <- cv.glmnet(rep_omega, rep_repshare)
+
+
+
+#party &repshare for democrats on topics
+dem_all <- party_topic_data %>% select(party,tp1,tp2,tp2,tp4,tp5,tp5,tp7,tp8,tp9,tp10,repshare)%>% filter(party=="D")
+dem_omega<-as.matrix(dem_all%>% select(tp1,tp2,tp2,tp4,tp5,tp5,tp7,tp8,tp9,tp10))
+dem_repshare<-dem_all$repshare
+dem_regtopics.cv <- cv.glmnet(dem_omega, dem_repshare)
+```
+
+
+```{r}
+
+x <- 100 * congress109Counts / rowSums(congress109Counts) 
+phrase<-as.data.frame(as.matrix(x))
+phrases_col<-colnames(phrase)
+phrase$candidates<-rownames(phrase)
+congressparty<-congress109Ideology%>%select(name,party,repshare)
+congressparty$candidates<-congressparty$name
+party_phrase_data<-merge(phrase,congressparty,by="candidates")
+
+
+#party &repshare for republican on phrase
+rep_all <- party_phrase_data%>% filter(party=="R")
+rep_phrase<-rep_all %>%select(-name,-party,-candidates,-repshare)
+rep_phrase_mat<-as.matrix(rep_phrase)
+rep_phrase_repshare<-rep_all$repshare
+rep_regphrase.cv <- cv.glmnet(rep_phrase_mat, rep_phrase_repshare) 
+
+
+
+#party &repshare for democrats on phrase
+dem_all <- party_phrase_data%>% filter(party=="D")
+dem_phrase<-dem_all %>%select(-name,-party,-candidates,-repshare)
+dem_phrase_mat<-as.matrix(dem_phrase)
+dem_phrase_repshare<-dem_all$repshare
+dem_regphrase.cv <- cv.glmnet(dem_phrase_mat, dem_phrase_repshare)
+
+
+# max OOS R^2s for republicans
+max(1-rep_regtopics.cv$cvm/rep_regtopics.cv$cvm[1])
+max(1-rep_regphrase.cv $cvm/rep_regphrase.cv $cvm[1])
+
+
+# max OOS R^2s
+max(1-dem_regtopics.cv$cvm/dem_regtopics.cv$cvm[1])
+max(1-dem_regphrase.cv $cvm/dem_regphrase.cv $cvm[1])
+```
+
+Conclusions:
+TOPICS	EMERGING THEMES
+Topic 1	African-American Rights as the dominant words are Rosa Parks, Civil Rights, Luther King, Black Caucus
+Topic 2	 Budget 
+Topic 3	Immigration and Internal security
+Topic 4	Foreign Policy and Defense
+Topic 5	Economy and Employment
+Topic 6	Environment: Climate Change & Energy Resources
+Topic 7	Chief Justice & Judiciary
+Topic 8	Gun industry and Laws & Poverty (Low income)
+Topic 9	Trade & related Policy 
+Topic 10	Embryonic stem
+
+Partisanship in K-Means clusters:
+We have taken K=20 and each of the clusters indicates a topic. There is clear dominance of the party observed for each topic(cluster) as the weightages of at least one of the parties is 0.7 or more. Hence, we do not observe any non-partisan topic through K-Means clustering.
+Democrats	Independent	Republicans
+			
+1	0.160	0.000	0.840
+2	0.778	0.000	0.222
+3	0.714	0.143	0.143
+4	1.000	0.000	0.000
+5	0.000	0.000	1.000
+6	0.692	0.000	0.308
+7	0.000	0.000	1.000
+8	1.000	0.000	0.000
+9	0.800	0.000	0.200
+10	1.000	0.000	0.000
+11	0.100	0.000	0.900
+12	0.000	0.000	1.000
+13	1.000	0.000	0.000
+14	0.000	0.000	1.000
+15	0.000	0.000	1.000
+16	0.240	0.000	0.760
+17	1.000	0.000	0.000
+18	0.309	0.004	0.687
+19	0.000	0.000	1.000
+20	0.171	0.000	0.829
+
+Partisanship in Topic Clusters:
+
+                 party	tp1_wt	tp2_wt	tp3_wt	tp4_wt	tp5_wt	tp6_wt	tp7_wt	tp8_wt	tp9_wt	tp10_wt
+											
+1	D	0.667	0.878	0.207	0.26	0.204	0.399	0.322	0.751	0.594	0.246
+2	R	0.333	0.122	0.793	0.74	0.796	0.601	0.678	0.249	0.406	0.754
+
+By observing the topic weightage percentage for the parties, we notice that topic_9 among all topics seems to non-partisan as the weightage % is in the similar range.
+
+For republican parties:
+•	on regressing topics on repshare we get R2  of ~0.0071
+•	on regressing phrase percentage on repshare we get R2  of ~0.00081
+For democrats:
+•	on regressing topics on repshare we get R2  of ~0.123
+•	on regressing phrase percentage on repshare we get R2  of ~0.116
+Topic regression seems to better than phrase percentage regression in predicting the repshare especially for Democrats over Republicans.
+
+
+
